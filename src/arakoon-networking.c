@@ -143,7 +143,10 @@ static arakoon_rc _arakoon_networking_poll_act(NetworkAction action,
                                 return ARAKOON_RC_CLIENT_TIMEOUT;
                         }
 
-                        ev_cnt = poll(&ev, 1, time_left);
+                        do
+                        {
+                            ev_cnt = poll(&ev, 1, time_left);
+                        } while (ev_cnt == -1 && errno == EINTR);
 
                         if(ev_cnt < 0) {
                                 rc = clock_gettime(CLOCK_SOURCE, &now);

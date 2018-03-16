@@ -104,8 +104,8 @@ arakoon_rc _arakoon_cluster_node_connect(ArakoonClusterNode *node,
 
         FUNCTION_ENTER(_arakoon_cluster_node_connect);
 
-        _arakoon_log_info("arakoon-cluster-node: connecting to %s",
-                node->name);
+        _arakoon_log_info("arakoon-cluster-node: connecting to %s, timeout %d",
+			  node->name, timeout ? *timeout : 0);
 
         if(node->fd >= 0) {
                 _arakoon_log_warning(

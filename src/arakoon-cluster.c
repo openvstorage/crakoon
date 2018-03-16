@@ -21,6 +21,7 @@
  * If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <assert.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -110,12 +111,60 @@ void arakoon_cluster_free(ArakoonCluster *cluster) {
         arakoon_mem_free(cluster);
 }
 
+static size_t cluster_size(ArakoonCluster * const cluster) {
+        size_t n = 0;
+        ArakoonClusterNode *node = NULL;
+
+        for (node = cluster->nodes; node != NULL; node = _arakoon_cluster_node_get_next(node)) {
+                ++n;
+        }
+
+        return n;
+}
+
+static int initial_timeout(size_t num_nodes,
+                           const ArakoonClientCallOptions * const options) {
+        const int total_timeout = options != NULL ?
+                arakoon_client_call_options_get_timeout(options) :
+                ARAKOON_CLIENT_CALL_OPTIONS_DEFAULT_TIMEOUT;
+        int timeout = 0;
+
+        if (total_timeout > 0) {
+                /* Worst case (cf. arakoon_cluster_connect_master):
+                 * connection to all nodes but the last one times out, and afterwards we
+                 * still connect to and verify the master, so that's (num_nodes + 1) * 2
+                 */
+                num_nodes = (num_nodes + 1) * 2;
+                timeout = total_timeout / num_nodes + ((total_timeout % num_nodes == 0) ? 0 : 1);
+        } else {
+                timeout = total_timeout;
+        }
+
+        return timeout;
+}
+
+static void adjust_timeout(int per_node_timeout, int * timeout) {
+        assert(timeout);
+
+        if (*timeout > 0) {
+                assert(per_node_timeout > 0);
+                *timeout += per_node_timeout;
+        } else if (per_node_timeout >= 0) {
+                *timeout = per_node_timeout;
+        } else {
+                *timeout = ARAKOON_CLIENT_CALL_OPTIONS_INFINITE_TIMEOUT;
+        }
+}
+
 arakoon_rc arakoon_cluster_connect_master(ArakoonCluster * const cluster,
-    const ArakoonClientCallOptions * const options) {
+                                          const ArakoonClientCallOptions * const options) {
         ArakoonClusterNode *node = NULL;
         arakoon_rc rc = 0;
         char *master = NULL;
-        int timeout = ARAKOON_CLIENT_CALL_OPTIONS_DEFAULT_TIMEOUT;
+        size_t num_nodes = cluster_size(cluster);
+        const int per_node_timeout = initial_timeout(num_nodes,
+                                                     options);
+        int timeout = per_node_timeout;
 
         FUNCTION_ENTER(arakoon_cluster_connect_master);
 
@@ -123,22 +172,19 @@ arakoon_rc arakoon_cluster_connect_master(ArakoonCluster * const cluster,
 
         _arakoon_log_debug("Looking up master node");
 
-        timeout = options != NULL ?
-                arakoon_client_call_options_get_timeout(options) :
-                ARAKOON_CLIENT_CALL_OPTIONS_DEFAULT_TIMEOUT;
-
         /* Find a node to which we can connect */
         node = cluster->nodes;
         while(node != NULL) {
+                num_nodes -= 1;
                 rc = _arakoon_cluster_node_connect(node, &timeout);
+                adjust_timeout(per_node_timeout, &timeout);
 
                 if(ARAKOON_RC_IS_SUCCESS(rc)) {
                         _arakoon_log_debug("Connected to node %s",
-                                _arakoon_cluster_node_get_name(node));
-
+                                           _arakoon_cluster_node_get_name(node));
                         rc = _arakoon_cluster_node_who_master(node, &timeout,
-                                &master);
-
+                                                              &master);
+                        adjust_timeout(per_node_timeout, &timeout);
                         if(ARAKOON_RC_IS_SUCCESS(rc) && master != NULL) {
                                 break;
                         }
@@ -154,8 +200,11 @@ arakoon_rc arakoon_cluster_connect_master(ArakoonCluster * const cluster,
                                         arakoon_strerror(rc));
                         }
                 }
-
                 node = _arakoon_cluster_node_get_next(node);
+        }
+
+        if (num_nodes) {
+                adjust_timeout(per_node_timeout * num_nodes, &timeout);
         }
 
         if(node == NULL) {
@@ -169,7 +218,7 @@ arakoon_rc arakoon_cluster_connect_master(ArakoonCluster * const cluster,
                 arakoon_mem_free(master);
 
                 _arakoon_log_info("Found master node %s",
-                        _arakoon_cluster_node_get_name(node));
+                                  _arakoon_cluster_node_get_name(node));
 
                 return ARAKOON_RC_SUCCESS;
         }
@@ -197,6 +246,8 @@ arakoon_rc arakoon_cluster_connect_master(ArakoonCluster * const cluster,
         /* Check whether master thinks it's master */
         _arakoon_log_debug("Validating master node");
 
+        adjust_timeout(per_node_timeout, &timeout);
+
         rc = _arakoon_cluster_node_who_master(node, &timeout, &master);
         RETURN_IF_NOT_SUCCESS(rc);
 
@@ -211,7 +262,7 @@ arakoon_rc arakoon_cluster_connect_master(ArakoonCluster * const cluster,
                 cluster->master = node;
 
                 _arakoon_log_debug("Found master node %s",
-                        _arakoon_cluster_node_get_name(node));
+                                   _arakoon_cluster_node_get_name(node));
         }
 
         arakoon_mem_free(master);
